@@ -1,5 +1,14 @@
 # @effect/platform-browser
 
+## 4.0.0-beta.49
+
+### Patch Changes
+
+- [#2030](https://github.com/Effect-TS/effect-smol/pull/2030) [`253efe6`](https://github.com/Effect-TS/effect-smol/commit/253efe6f52ecef187d286e6eaba270e0f4d939ed) Thanks @tim-smart! - Add BrowserPersistence.layerIndexedDb for composing Persistence.layer with the IndexedDB backing layer, and export BrowserPersistence from the package barrel.
+
+- Updated dependencies []:
+  - effect@4.0.0-beta.49
+
 ## 4.0.0-beta.48
 
 ### Patch Changes

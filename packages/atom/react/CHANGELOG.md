@@ -1,5 +1,12 @@
 # @effect/atom-react
 
+## 4.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies []:
+  - effect@4.0.0-beta.49
+
 ## 4.0.0-beta.48
 
 ### Patch Changes
