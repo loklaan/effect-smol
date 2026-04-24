@@ -7,14 +7,21 @@
  * @since 1.0.0
  */
 
-import type { MutableJson } from "effect/Schema"
-
 /**
+ * Amazon Bedrock-specific error metadata fields.
+ *
  * @since 1.0.0
  * @category models
  */
-export interface AmazonBedrockErrorMetadata {
-  readonly [key: string]: MutableJson
+export type AmazonBedrockErrorMetadata = {
+  /**
+   * The Amazon Bedrock error type returned by the API.
+   */
+  readonly errorType: string | null
+  /**
+   * The unique request ID for debugging with AWS support.
+   */
+  readonly requestId: string | null
 }
 
 declare module "effect/unstable/ai/AiError" {

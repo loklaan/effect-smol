@@ -32,7 +32,7 @@ export declare namespace AmazonBedrockConfig {
    * @category models
    */
   export interface Service {
-    readonly transformClient?: (client: HttpClient) => HttpClient
+    readonly transformClient?: ((client: HttpClient) => HttpClient) | undefined
   }
 }
 

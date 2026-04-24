@@ -35,6 +35,17 @@ export * as AmazonBedrockLanguageModel from "./AmazonBedrockLanguageModel.ts"
 export * as AmazonBedrockSchema from "./AmazonBedrockSchema.ts"
 
 /**
+ * Amazon Bedrock telemetry attributes for OpenTelemetry integration.
+ *
+ * Provides Amazon Bedrock-specific GenAI telemetry attributes following
+ * OpenTelemetry semantic conventions, extending the base GenAI attributes with
+ * Bedrock-specific request and response metadata.
+ *
+ * @since 1.0.0
+ */
+export * as AmazonBedrockTelemetry from "./AmazonBedrockTelemetry.ts"
+
+/**
  * Amazon Bedrock provider-defined tools.
  *
  * Re-exports Anthropic tools for use with Amazon Bedrock when running

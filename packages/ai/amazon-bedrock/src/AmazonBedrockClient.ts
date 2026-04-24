@@ -52,12 +52,21 @@ export interface Service {
   readonly converse: (options: {
     readonly params?: { "anthropic-beta"?: string | undefined } | undefined
     readonly payload: typeof ConverseRequest.Encoded
-  }) => Effect.Effect<ConverseResponse, AiError.AiError>
+  }) => Effect.Effect<
+    [body: typeof ConverseResponse.Type, response: HttpClientResponse.HttpClientResponse],
+    AiError.AiError
+  >
 
   readonly converseStream: (options: {
     readonly params?: { "anthropic-beta"?: string | undefined } | undefined
     readonly payload: typeof ConverseRequest.Encoded
-  }) => Stream.Stream<ConverseResponseStreamEvent, AiError.AiError>
+  }) => Effect.Effect<
+    [
+      response: HttpClientResponse.HttpClientResponse,
+      stream: Stream.Stream<ConverseResponseStreamEvent, AiError.AiError>
+    ],
+    AiError.AiError
+  >
 }
 
 /**
@@ -147,7 +156,27 @@ export const make = Effect.fnUntraced(
         }),
         body: HttpBody.jsonUnsafe(body)
       })
-      return streamRequest(request, ConverseResponseStreamEvent)
+      return httpClientOk.execute(request).pipe(
+        Effect.map(
+          (
+            response
+          ): [HttpClientResponse.HttpClientResponse, Stream.Stream<ConverseResponseStreamEvent, AiError.AiError>] => {
+            const stream = response.stream.pipe(
+              Stream.pipeThroughChannel(EventStreamEncoding.makeChannel(ConverseResponseStreamEvent)),
+              Stream.catchTags({
+                HttpClientError: (error: HttpClientError.HttpClientError) =>
+                  Stream.unwrap(Errors.mapHttpClientError(error, "converseStream")),
+                SchemaError: (error: Schema.SchemaError) => Stream.fail(Errors.mapSchemaError(error, "converseStream"))
+              })
+            ) as any
+            return [response, stream]
+          }
+        ),
+        Effect.catchTag(
+          "HttpClientError",
+          (error: HttpClientError.HttpClientError) => Errors.mapHttpClientError(error, "converseStream")
+        )
+      )
     }
 
     return AmazonBedrockClient.of({
@@ -231,7 +260,10 @@ export interface Client {
   readonly converse: (options: {
     readonly params?: { "anthropic-beta"?: string | undefined } | undefined
     readonly payload: typeof ConverseRequest.Encoded
-  }) => Effect.Effect<typeof ConverseResponse.Type, HttpClientError.HttpClientError | Schema.SchemaError>
+  }) => Effect.Effect<
+    [body: typeof ConverseResponse.Type, response: HttpClientResponse.HttpClientResponse],
+    HttpClientError.HttpClientError | Schema.SchemaError
+  >
 }
 
 const makeClient = (
@@ -266,7 +298,9 @@ const makeClient = (
       )
     : (f) => (request) => Effect.flatMap(httpClient.execute(request), f)
   const decodeSuccess = <T>(schema: Schema.Schema<T>) => (response: HttpClientResponse.HttpClientResponse) =>
-    HttpClientResponse.schemaBodyJson(schema)(response)
+    HttpClientResponse.schemaBodyJson(schema)(response).pipe(
+      Effect.map((decoded) => [decoded, response] as const)
+    )
   return {
     converse: ({ params, payload: { modelId, ...payload } }) =>
       HttpClientRequest.post(`/model/${modelId}/converse`).pipe(

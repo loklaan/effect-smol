@@ -174,7 +174,10 @@ export const mapStatusCodeToReason = ({ status, message, http }: {
   readonly message: string | undefined
   readonly http: typeof AiError.HttpContext.Type
 }): AiError.AiErrorReason => {
-  const metadata: AmazonBedrockErrorMetadata = {}
+  const metadata: AmazonBedrockErrorMetadata = {
+    errorType: null,
+    requestId: null
+  }
 
   switch (status) {
     case 400:

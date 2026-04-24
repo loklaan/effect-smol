@@ -1,13 +1,16 @@
 /**
  * @since 1.0.0
  */
+/** @effect-diagnostics preferSchemaOverJson:skip-file */
 import * as Context from "effect/Context"
 import * as DateTime from "effect/DateTime"
 import * as Effect from "effect/Effect"
 import * as Encoding from "effect/Encoding"
 import { dual } from "effect/Function"
 import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
 import * as Predicate from "effect/Predicate"
+import * as Redactable from "effect/Redactable"
 import type { JsonObject } from "effect/Schema"
 import * as SchemaAST from "effect/SchemaAST"
 import * as Stream from "effect/Stream"
@@ -19,8 +22,9 @@ import * as LanguageModel from "effect/unstable/ai/LanguageModel"
 import * as AiModel from "effect/unstable/ai/Model"
 import type * as Prompt from "effect/unstable/ai/Prompt"
 import type * as Response from "effect/unstable/ai/Response"
-import { addGenAIAnnotations } from "effect/unstable/ai/Telemetry"
 import * as Tool from "effect/unstable/ai/Tool"
+import type * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
+import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 import { AmazonBedrockClient } from "./AmazonBedrockClient.ts"
 import type {
   BedrockFoundationModelId,
@@ -37,6 +41,7 @@ import type {
   ToolConfiguration
 } from "./AmazonBedrockSchema.ts"
 import { ImageFormat } from "./AmazonBedrockSchema.ts"
+import { addGenAIAnnotations } from "./AmazonBedrockTelemetry.ts"
 import * as InternalUtilities from "./internal/utilities.ts"
 
 const BEDROCK_CACHE_POINT: {
@@ -225,12 +230,12 @@ export const make = Effect.fnUntraced(function*(options: {
         const { betas, request, nameMapper } = yield* makeRequest(options)
         annotateRequest(options.span, request)
         const anthropicBeta = betas.size > 0 ? Array.from(betas).join(",") : undefined
-        const rawResponse = yield* client.converse({
+        const [rawResponse, httpResponse] = yield* client.converse({
           params: anthropicBeta !== undefined ? { "anthropic-beta": anthropicBeta } : undefined,
           payload: request
         })
         annotateResponse(options.span, request, rawResponse)
-        return yield* makeResponse(request, rawResponse, options, nameMapper)
+        return yield* makeResponse(request, rawResponse, httpResponse, options, nameMapper)
       }
     ),
     streamText: Effect.fnUntraced(
@@ -238,15 +243,17 @@ export const make = Effect.fnUntraced(function*(options: {
         const { betas, request, nameMapper } = yield* makeRequest(options)
         annotateRequest(options.span, request)
         const anthropicBeta = betas.size > 0 ? Array.from(betas).join(",") : undefined
-        const stream = client.converseStream({
+        const [httpResponse, stream] = yield* client.converseStream({
           params: anthropicBeta !== undefined ? { "anthropic-beta": anthropicBeta } : undefined,
           payload: request
         })
-        return { request, stream, nameMapper }
+        return { request, httpResponse, stream, nameMapper }
       },
       (effect, options) =>
         effect.pipe(
-          Effect.flatMap(({ request, stream, nameMapper }) => makeStreamResponse(request, stream, options, nameMapper)),
+          Effect.flatMap(({ request, httpResponse, stream, nameMapper }) =>
+            makeStreamResponse(request, httpResponse, stream, options, nameMapper)
+          ),
           Stream.unwrap,
           Stream.map((response) => {
             annotateStreamResponse(options.span, response)
@@ -272,15 +279,21 @@ export const layer = (options: {
  * @category configuration
  */
 export const withConfigOverride: {
-  (config: Config.Service): <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
-  <A, E, R>(self: Effect.Effect<A, E, R>, config: Config.Service): Effect.Effect<A, E, R>
+  (overrides: typeof Config.Service): <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E, Exclude<R, Config>>
+  <A, E, R>(self: Effect.Effect<A, E, R>, overrides: typeof Config.Service): Effect.Effect<A, E, Exclude<R, Config>>
 } = dual<
-  (config: Config.Service) => <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>,
-  <A, E, R>(self: Effect.Effect<A, E, R>, config: Config.Service) => Effect.Effect<A, E, R>
+  (
+    overrides: typeof Config.Service
+  ) => <A, E, R>(self: Effect.Effect<A, E, R>) => Effect.Effect<A, E, Exclude<R, Config>>,
+  <A, E, R>(self: Effect.Effect<A, E, R>, overrides: typeof Config.Service) => Effect.Effect<A, E, Exclude<R, Config>>
 >(2, (self, overrides) =>
   Effect.flatMap(
-    Config.getOrUndefined,
-    (config) => Effect.provideService(self, Config, { ...config, ...overrides })
+    Effect.serviceOption(Config),
+    (config) =>
+      Effect.provideService(self, Config, {
+        ...(config._tag === "Some" ? config.value : {}),
+        ...overrides
+      })
   ))
 
 // =============================================================================
@@ -483,13 +496,14 @@ const prepareMessages: (options: LanguageModel.ProviderOptions) => Effect.Effect
 const makeResponse: (
   request: typeof ConverseRequest.Encoded,
   response: ConverseResponse,
+  httpResponse: HttpClientResponse.HttpClientResponse,
   options: LanguageModel.ProviderOptions,
   nameMapper: Tool.NameMapper<ReadonlyArray<Tool.Any>>
 ) => Effect.Effect<
   Array<Response.PartEncoded>,
   never,
   IdGenerator.IdGenerator
-> = Effect.fnUntraced(function*(request, response, options, nameMapper) {
+> = Effect.fnUntraced(function*(request, response, httpResponse, options, nameMapper) {
   const parts: Array<Response.PartEncoded> = []
 
   parts.push({
@@ -497,7 +511,7 @@ const makeResponse: (
     id: undefined,
     modelId: request.modelId,
     timestamp: DateTime.formatIso(yield* DateTime.now),
-    request: undefined
+    request: buildHttpRequestDetails(httpResponse.request)
   })
 
   for (const part of response.output.message.content) {
@@ -570,7 +584,7 @@ const makeResponse: (
         reasoning: undefined
       }
     },
-    response: undefined,
+    response: buildHttpResponseDetails(httpResponse),
     metadata: {
       bedrock: {
         ...(response.trace !== undefined
@@ -590,6 +604,7 @@ const makeResponse: (
 
 const makeStreamResponse: (
   request: typeof ConverseRequest.Encoded,
+  httpResponse: HttpClientResponse.HttpClientResponse,
   stream: Stream.Stream<ConverseResponseStreamEvent, AiError.AiError>,
   options: LanguageModel.ProviderOptions,
   nameMapper: Tool.NameMapper<ReadonlyArray<Tool.Any>>
@@ -598,7 +613,7 @@ const makeStreamResponse: (
   never,
   IdGenerator.IdGenerator
 > = Effect.fnUntraced(
-  function*(request, stream, options, nameMapper) {
+  function*(request, httpResponse, stream, options, nameMapper) {
     const contentBlocks: Record<
       number,
       | {
@@ -640,7 +655,7 @@ const makeStreamResponse: (
           type: "finish",
           reason: finishReason,
           usage,
-          response: undefined,
+          response: buildHttpResponseDetails(httpResponse),
           metadata: {
             bedrock: {
               ...(trace !== undefined ? { trace } : undefined),
@@ -665,7 +680,7 @@ const makeStreamResponse: (
             id: undefined,
             modelId: request.modelId,
             timestamp: DateTime.formatIso(yield* DateTime.now),
-            request: undefined
+            request: buildHttpRequestDetails(httpResponse.request)
           })
         } else if ("messageStop" in event) {
           finishReason = InternalUtilities.resolveFinishReason(event.messageStop.stopReason)
@@ -1006,6 +1021,27 @@ const prepareTools: (
     : {}
 
   return { additionalTools, betas, toolConfig, nameMapper }
+})
+
+// =============================================================================
+// HTTP Details
+// =============================================================================
+
+const buildHttpRequestDetails = (
+  request: HttpClientRequest.HttpClientRequest
+): typeof Response.HttpRequestDetails.Type => ({
+  method: request.method,
+  url: request.url,
+  urlParams: Array.from(request.urlParams),
+  hash: Option.getOrUndefined(request.hash),
+  headers: Redactable.redact(request.headers) as Record<string, string>
+})
+
+const buildHttpResponseDetails = (
+  response: HttpClientResponse.HttpClientResponse
+): typeof Response.HttpResponseDetails.Type => ({
+  status: response.status,
+  headers: Redactable.redact(response.headers) as Record<string, string>
 })
 
 // =============================================================================
